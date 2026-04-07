@@ -20,6 +20,21 @@ const config = {
     REPORTE: '/api/jornada/reporte',
     PING:    '/api/jornada/ping',
   },
+
+  // Mapeo de nombres de apps mostrados por active-win a nombres ejecutables
+  APP_NAME_MAPPING: {
+    'Microsoft Excel': 'excel.exe',
+    'Microsoft Outlook': 'outlook.exe',
+    'Microsoft Edge': 'edge.exe',
+    'Google Chrome': 'chrome.exe',
+    'Visual Studio Code': 'code.exe',
+    'VS Code': 'code.exe',
+    'Microsoft Teams': 'teams.exe',
+    'Mozilla Firefox': 'firefox.exe',
+    'Notepad': 'notepad.exe',
+    'Slack': 'slack.exe',
+    'Discord': 'discord.exe',
+  },
 };
 
 module.exports = config;

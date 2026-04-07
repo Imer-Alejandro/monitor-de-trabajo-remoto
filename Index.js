@@ -14,6 +14,7 @@ let jornadaActualId = null;
 let appsPermitidas = [];
 let horarioFin = null;
 let finTimer = null;
+let pingTimer = null;
 
 const { windowsUsername, nombreEquipo, agentUuid } = getIdentidad();
 
@@ -33,6 +34,7 @@ const reportePendiente = db.get('reporte_enviado');
 if (jornadaPendiente && reportePendiente === '0') {
   console.log(`[init] Hay un reporte pendiente de la jornada ${jornadaPendiente}.`);
   console.log('[init] Se intentará enviar cuando haya conexión.');
+  setTimeout(() => reintentarReportesPendientes(), 5000); // Reintentar en 5 segundos
 }
 
 function validarHora(hora) {
