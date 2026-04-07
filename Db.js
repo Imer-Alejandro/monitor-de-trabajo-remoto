@@ -24,7 +24,7 @@ db.pragma('synchronous = NORMAL');
 db.exec(`
   -- Estado e identidad del agente (clave-valor)
   CREATE TABLE IF NOT EXISTS estado_local (
-    clave TEXT PRIMARY KEY,
+    clave TEXT PRIMARY KEY, 
     valor TEXT
   );
 

@@ -1,26 +1,25 @@
 // index.js - Punto de entrada del agente
 // Se ejecuta en segundo plano como servicio Windows
 
-const config      = require('./Config');
-const db          = require('./Db');
-const { getIdentidad }    = require('./Identidad');
-const { consultarEstado, enviarPing } = require('./Api');
+const config = require('./Config');
+const db = require('./Db');
+const { getIdentidad } = require('./Identidad');
+const Polling = require('./Polling');
+const monitor = require('./Monitor');
+const { generarYEnviarReporte } = require('./Reporte');
+const { enviarPing } = require('./Api');
 
-// ─── Estado en memoria ────────────────────────────────────────────────────────
-let jornadaActiva   = false;   // true cuando estamos monitoreando
-let jornadaActualId = null;    // ID de la jornada en curso
-let appsPermitidas  = [];      // lista que vendrá del servidor
+let jornadaActiva = false;
+let jornadaActualId = null;
+let appsPermitidas = [];
+let horarioFin = null;
+let finTimer = null;
 
-// Importamos el monitor pero solo lo inicializamos cuando haya jornada activa
-// (se cargará en Parte 2)
-let monitor = null;
-
-// ─── Identidad ────────────────────────────────────────────────────────────────
 const { windowsUsername, nombreEquipo, agentUuid } = getIdentidad();
 
 console.log('─────────────────────────────────────────');
 console.log(' Agente de Monitoreo de Jornadas Remotas');
-console.log('─────────────────────────────────────────'); 
+console.log('─────────────────────────────────────────');
 console.log(` Usuario  : ${windowsUsername}`);
 console.log(` Equipo   : ${nombreEquipo}`);
 console.log(` AgentID  : ${agentUuid}`);
@@ -29,104 +28,142 @@ console.log('──────────────────────�
 console.log(' Estado   : ESPERANDO JORNADA...');
 console.log('');
 
-// ─── Recuperar jornada pendiente de reporte (por si el agente se reinició) ───
 const jornadaPendiente = db.get('jornada_activa_id');
 const reportePendiente = db.get('reporte_enviado');
-
 if (jornadaPendiente && reportePendiente === '0') {
   console.log(`[init] Hay un reporte pendiente de la jornada ${jornadaPendiente}.`);
   console.log('[init] Se intentará enviar cuando haya conexión.');
-  // El manejo del reenvío se implementa en Parte 3
 }
 
-// ─── Loop principal de polling ────────────────────────────────────────────────
-async function tick() {
-  const respuesta = await consultarEstado(windowsUsername);
+function validarHora(hora) {
+  if (typeof hora !== 'string') return false;
+  const partes = hora.split(':').map(Number);
+  return partes.length === 2 && partes.every(num => Number.isInteger(num) && num >= 0 && num < 60) && partes[0] < 24;
+}
 
-  // Sin respuesta del servidor → seguir esperando silenciosamente
-  if (!respuesta) return;
+function buildHorario(horaInicio, horaFin, now = new Date()) {
+  const [hInicio, mInicio] = horaInicio.split(':').map(Number);
+  const [hFin, mFin] = horaFin.split(':').map(Number);
 
-  const { estado, jornada_id, hora_inicio, hora_fin, apps_permitidas } = respuesta;
+  const inicio = new Date(now);
+  inicio.setHours(hInicio, mInicio, 0, 0);
 
-  // ── Caso: jornada se activó y no estábamos monitoreando ──────────────────
-  if (estado === 'activa' && !jornadaActiva) {
-    console.log(`\n[polling] Jornada ${jornada_id} ACTIVADA`);
-    console.log(`[polling] Horario: ${hora_inicio} - ${hora_fin}`);
-    console.log(`[polling] Apps requeridas: ${apps_permitidas.join(', ')}`);
+  const fin = new Date(now);
+  fin.setHours(hFin, mFin, 0, 0);
+  if (fin <= inicio) {
+    fin.setDate(fin.getDate() + 1);
+  }
 
-    jornadaActiva   = true;
-    jornadaActualId = jornada_id;
-    appsPermitidas  = apps_permitidas || [];
+  return { inicio, fin };
+}
 
-    // Guardar en SQLite por si se reinicia el equipo
-    db.set('jornada_activa_id', jornada_id);
-    db.set('reporte_enviado', '0');
+function iniciarMonitoreo(jornadaId, apps, inicio, fin) {
+  console.log('[monitor] Iniciando captura de actividad...');
 
-    iniciarMonitoreo(jornada_id, appsPermitidas, hora_fin);
+  Polling.stop();
+
+  jornadaActiva = true;
+  jornadaActualId = jornadaId;
+  appsPermitidas = apps || [];
+  horarioFin = fin;
+
+  db.set('jornada_activa_id', jornadaId);
+  db.set('reporte_enviado', '0');
+  db.set('jornada_hora_inicio', inicio.toISOString());
+  db.set('jornada_hora_fin', fin.toISOString());
+
+  monitor.iniciar(jornadaId, appsPermitidas);
+
+  const msHastaFin = Math.max(0, fin.getTime() - Date.now());
+  finTimer = setTimeout(() => finalizarJornada('horario'), msHastaFin + 500);
+}
+
+async function finalizarJornada(motivo) {
+  if (!jornadaActiva) {
+    console.log('[jornada] No hay jornada activa para finalizar.');
     return;
   }
 
-  // ── Caso: jornada se desactivó externamente (admin la canceló) ───────────
+  console.log(`\n[jornada] Finalizando por: ${motivo}`);
+  if (finTimer) {
+    clearTimeout(finTimer);
+    finTimer = null;
+  }
+
+  monitor.detener();
+
+  const ok = await generarYEnviarReporte(jornadaActualId, windowsUsername);
+  if (!ok) {
+    console.warn('[jornada] No se pudo enviar el reporte. Quedará pendiente.');
+  }
+
+  jornadaActiva = false;
+  jornadaActualId = null;
+  appsPermitidas = [];
+  horarioFin = null;
+
+  Polling.start(windowsUsername, manejarEstado);
+
+  console.log('[agente] Volviendo a modo ESPERA...\n');
+}
+
+async function manejarEstado(respuesta) {
+  if (!respuesta) {
+    console.log('[polling] No se recibió respuesta del servidor.');
+    return;
+  }
+
+  const { estado, jornada_id, hora_inicio, hora_fin, apps_permitidas } = respuesta;
+
+  if (!validarHora(hora_inicio) || !validarHora(hora_fin)) {
+    console.warn('[polling] Formato de horario inválido recibido del servidor.');
+    return;
+  }
+
+  const ahora = new Date();
+  const { inicio, fin } = buildHorario(hora_inicio, hora_fin, ahora);
+
+  if (estado === 'activa' && !jornadaActiva) {
+    if (ahora < inicio) {
+      console.log(`[polling] Jornada ${jornada_id} aún no inicia. Comienza a las ${hora_inicio}.`);
+      return;
+    }
+
+    if (ahora >= fin) {
+      console.log(`[polling] Jornada ${jornada_id} ya finalizó según el horario ${hora_inicio} - ${hora_fin}.`);
+      return;
+    }
+
+    if (jornadaActualId && jornadaActualId === jornada_id) {
+      console.log('[polling] Ya existe una jornada activa con el mismo ID, evitando doble inicio.');
+      return;
+    }
+
+    console.log(`\n[polling] Jornada ${jornada_id} ACTIVADA`);
+    console.log(`[polling] Horario: ${hora_inicio} - ${hora_fin}`);
+    console.log(`[polling] Apps requeridas: ${apps_permitidas?.join(', ') || 'Ninguna'}`);
+
+    iniciarMonitoreo(jornada_id, apps_permitidas || [], inicio, fin);
+    return;
+  }
+
   if (estado !== 'activa' && jornadaActiva) {
     console.log(`\n[polling] Jornada ${jornadaActualId} finalizada por el servidor.`);
     await finalizarJornada('servidor');
     return;
   }
 
-  // ── Caso: sigue activa, enviar ping ──────────────────────────────────────
-  if (estado === 'activa' && jornadaActiva) {
+  if (estado === 'activa' && jornadaActiva && jornada_id === jornadaActualId) {
+    if (ahora >= horarioFin) {
+      await finalizarJornada('horario');
+      return;
+    }
     await enviarPing(windowsUsername, jornadaActualId);
   }
 }
 
-// ─── Iniciar monitoreo ────────────────────────────────────────────────────────
-function iniciarMonitoreo(jornadaId, apps, horaFin) {
-  console.log('[monitor] Iniciando captura de actividad...\n');
 
-  // PARTE 2: aquí se montará el motor de monitoreo
-  // Por ahora solo dejamos el placeholder con la firma correcta
-  // monitor = require('./monitor');
-  // monitor.iniciar(jornadaId, apps, () => finalizarJornada('horario'));
+Polling.start(windowsUsername, manejarEstado);
 
-  // Verificar fin de jornada por horario cada minuto
-  const [hFin, mFin] = horaFin.split(':').map(Number);
-  const checkHorario = setInterval(() => {
-    const ahora = new Date();
-    if (ahora.getHours() >= hFin && ahora.getMinutes() >= mFin) {
-      clearInterval(checkHorario);
-      finalizarJornada('horario');
-    }
-  }, 60_000);
-}
-
-// ─── Finalizar jornada ────────────────────────────────────────────────────────
-async function finalizarJornada(motivo) {
-  console.log(`\n[jornada] Finalizando por: ${motivo}`);
-
-  if (monitor) {
-    monitor.detener();
-  }
-
-  // PARTE 3: aquí se calculará el reporte y se enviará
-  // const reporte = calcularReporte(jornadaActualId, windowsUsername);
-  // const ok = await enviarReporte(reporte);
-  // db.set('reporte_enviado', ok ? '1' : '0');
-
-  // Resetear estado en memoria
-  jornadaActiva   = false;
-  jornadaActualId = null;
-  appsPermitidas  = [];
-  monitor         = null;
-
-  console.log('[agente] Volviendo a modo ESPERA...\n');
-}
-
-// ─── Arranque ─────────────────────────────────────────────────────────────────
-tick(); // Primera consulta inmediata al iniciar
-
-const intervalo = config.POLLING_INTERVALO_SEG * 1000;
-setInterval(tick, intervalo);
-
-// Capturar cierre limpio del proceso
-process.on('SIGINT',  () => { console.log('\n[agente] Detenido.'); process.exit(0); });
+process.on('SIGINT', () => { console.log('\n[agente] Detenido.'); process.exit(0); });
 process.on('SIGTERM', () => { console.log('\n[agente] Detenido.'); process.exit(0); });

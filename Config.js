@@ -3,7 +3,7 @@
 
 const config = {
   // URL base del servidor corporativo
-  SERVER_URL: 'https://tu-servidor.com',
+  SERVER_URL: 'http://localhost:9000/',
 
   // Cada cuántos segundos consulta si hay jornada activa (modo espera)
   POLLING_INTERVALO_SEG: 30,
