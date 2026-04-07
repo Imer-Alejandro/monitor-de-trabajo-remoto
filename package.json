@@ -1,21 +1,28 @@
 {
-  "name": "monitortrabajoremoto",
+  "name": "agente-monitoreo-remoto",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Agente de monitoreo de jornadas remotas",
+  "main": "Index.js",
   "scripts": {
-    "dev": "nodemon index.js"
+    "start": "node Index.js",
+    "dev": "nodemon Index.js",
+    "build": "pkg Index.js --target node18-win-x64 --output dist/AgenteMonitoreo.exe --compress GZip"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
+  "pkg": {
+    "assets": [
+      "node_modules/better-sqlite3/build/Release/*.node"
+    ],
+    "targets": [
+      "node18-win-x64"
+    ]
+  },
   "dependencies": {
-    "active-win": "^8.2.1",
-    "axios": "^1.14.0",
-    "better-sqlite3": "^12.8.0"
+    "active-win": "^8.1.0",
+    "axios": "^1.6.7",
+    "better-sqlite3": "^9.4.3"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.0.0",
+    "pkg": "^5.8.1"
   }
 }
