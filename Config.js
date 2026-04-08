@@ -12,7 +12,7 @@ const config = {
   CAPTURA_INTERVALO_SEG: 5,
 
   // Segundos de inactividad de periféricos para considerar al usuario inactivo
-  UMBRAL_IDLE_SEG: 300, // 5 minutos
+  UMBRAL_IDLE_SEG: 100, // 5 minutos
 
   // Rutas de la API
   RUTAS: {
